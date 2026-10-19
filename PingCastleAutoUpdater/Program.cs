@@ -1,4 +1,5 @@
-﻿using PingCastle.misc;
+﻿using Netwrix.ArchiveVerification;
+using PingCastle.misc;
 using PingCastleAutoUpdater.ConfigurationConversion;
 using PingCastleAutoUpdater.ConfigurationMerge;
 using PingCastleAutoUpdater.ConfigurationOrchestration;
@@ -17,6 +18,7 @@ using System.Threading.Tasks;
 
 namespace PingCastleAutoUpdater
 {
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
     class Program
 	{
         private static async Task Main(string[] args)
@@ -291,21 +293,19 @@ namespace PingCastleAutoUpdater
                         responseStream.CopyTo(tempFileStream);
                     }
 
-                    if (!PackageIntegrityVerifier.VerifyArchive(tempZipPath, dryRun ? null : exeDirectory, out string failureReason))
+                    using (var verified = new VerifiedArchive(tempZipPath))
                     {
-                        Trace.WriteLine(failureReason + " Aborting install.");
-                        WriteInRed(failureReason + " Aborting install.");
-                        return;
-                    }
+                        if (!dryRun)
+                        {
+                            ArchiveInstaller.Install(verified.Entries.Where(e => VerifiedArchive.RequiresSignature(e.FullName)), exeDirectory);
+                        }
 
-                    using (var archive = ZipFile.OpenRead(tempZipPath))
-                    {
-                        foreach (var entry in archive.Entries)
+                        foreach (var entry in verified.Entries)
                         {
                             var targetFilePath = FilesValidator.CheckPathTraversal(entry.FullName, exeDirectory);
 
                             // Skip signed executables that were already installed from their verified copies.
-                            if (!dryRun && PackageIntegrityVerifier.RequiresSignature(entry))
+                            if (!dryRun && VerifiedArchive.RequiresSignature(entry.FullName))
                             {
                                 continue;
                             }
@@ -361,6 +361,12 @@ namespace PingCastleAutoUpdater
                         }
                     }
                 }
+                catch (ArchiveVerificationException ex)
+                {
+                    Trace.WriteLine(ex.Message + " Aborting install.");
+                    WriteInRed(ex.Message + " Aborting install.");
+                    return;
+                }
                 finally
                 {
                     try
@@ -400,38 +406,7 @@ namespace PingCastleAutoUpdater
 
             using (var e = entry.Open())
             {
-				string exeFullPath = Path.GetFullPath(exePath);
-
                 Console.WriteLine("Saving " + entryFullName);
-                if (File.Exists(entryFullPath))
-                {
-                    // If trying to overwrite the current exe (which is in use), use File.Replace
-                    if (string.Compare(entryFullPath, exeFullPath, StringComparison.OrdinalIgnoreCase) == 0)
-                    {
-                        string bakFileName = entryFullPath + ".bak";
-                        string tempFileName = entryFullPath + ".tmp";
-
-                        // Write new version to temp file first
-                        using (var tempFileStream = File.Create(tempFileName))
-                        {
-                            e.CopyTo(tempFileStream);
-                            tempFileStream.Close();
-                        }
-
-                        try
-                        {
-                            // File.Replace handles in-use files correctly on Windows
-                            File.Replace(tempFileName, entryFullPath, bakFileName, ignoreMetadataErrors: true);
-                        }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine($"Warning: Could not replace in-use file '{entryFullName}': {ex.Message}");
-                            // Clean up temp file
-                            try { File.Delete(tempFileName); } catch { }
-                        }
-                        return;
-                    }
-                }
 
                 using (var fileStream = File.Create(entryFullPath))
                 {
